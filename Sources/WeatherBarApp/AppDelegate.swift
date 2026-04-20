@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import WeatherBarCore
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let settings = AppSettings.shared
@@ -105,8 +106,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startBackgroundRefresh() {
         backgroundTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 20 * 60 * 1_000_000_000)
-                guard let self else { return }
+                do {
+                    try await Task.sleep(nanoseconds: 20 * 60 * 1_000_000_000)
+                } catch {
+                    return
+                }
+                guard let self, !Task.isCancelled else { return }
                 await MainActor.run {
                     self.refresh(force: true)
                 }
@@ -118,8 +123,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         retryTask?.cancel()
         let delay = min(pow(2.0, Double(consecutiveFailures)) * 60, 30 * 60)
         retryTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
-            guard let self else { return }
+            do {
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled else { return }
             await MainActor.run {
                 self.refresh(force: true)
             }

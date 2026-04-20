@@ -6,6 +6,7 @@ public actor WeatherRepository {
     private let ttl: TimeInterval
     private let now: () -> Date
     private var cachedSnapshot: WeatherSnapshot?
+    private var inFlightRefresh: Task<WeatherSnapshot, Error>?
 
     public init(
         provider: WeatherProvider,
@@ -24,10 +25,25 @@ public actor WeatherRepository {
             return cachedSnapshot
         }
 
-        let location = try await locationProvider.currentLocation()
-        let snapshot = try await provider.fetchWeather(for: location.coordinate).withLocation(location)
-        cachedSnapshot = snapshot
-        return snapshot
+        if let inFlightRefresh {
+            return try await inFlightRefresh.value
+        }
+
+        let task = Task { [locationProvider, provider] in
+            let location = try await locationProvider.currentLocation()
+            return try await provider.fetchWeather(for: location.coordinate).withLocation(location)
+        }
+        inFlightRefresh = task
+
+        do {
+            let snapshot = try await task.value
+            cachedSnapshot = snapshot
+            inFlightRefresh = nil
+            return snapshot
+        } catch {
+            inFlightRefresh = nil
+            throw error
+        }
     }
 
     public func cached() -> WeatherSnapshot? {

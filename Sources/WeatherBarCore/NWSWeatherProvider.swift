@@ -66,11 +66,12 @@ public final class NWSWeatherProvider: WeatherProvider {
     }
 
     private func currentObservation(
-        stationsURLString: String,
+        stationsURLString: String?,
         coordinate: Coordinate,
         fallbackPeriod: NWSPeriod
     ) async throws -> CurrentWeather? {
-        guard let stationsURL = URL(string: stationsURLString) else { return nil }
+        guard let stationsURLString,
+              let stationsURL = URL(string: stationsURLString) else { return nil }
         let stations = try await get(StationsResponse.self, url: stationsURL)
 
         for feature in stations.features.prefix(5) {
@@ -176,7 +177,7 @@ public final class NWSWeatherProvider: WeatherProvider {
     }
 
     private func format(_ value: Double) -> String {
-        String(format: "%.4f", value)
+        String(format: "%.4f", locale: Locale(identifier: "en_US_POSIX"), value)
     }
 
     private static func celsiusToFahrenheit(_ celsius: Double) -> Int {
@@ -194,7 +195,7 @@ public struct PointsResponse: Decodable {
 
 public struct PointsProperties: Decodable {
     public let forecastHourly: String
-    public let observationStations: String
+    public let observationStations: String?
     public let relativeLocation: RelativeLocation?
 }
 

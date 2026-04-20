@@ -71,6 +71,43 @@ final class NWSWeatherProviderTests: XCTestCase {
         XCTAssertTrue(http.requests.allSatisfy { $0.value(forHTTPHeaderField: "User-Agent") != nil })
     }
 
+    func testFetchWeatherDoesNotRequireObservationStations() async throws {
+        let http = MockHTTPClient()
+        http.responses = [
+            "/points/37.7749,-122.4194": pointsWithoutStationsJSON,
+            "/gridpoints/MTR/85,105/forecast/hourly": hourlyJSON
+        ]
+
+        let provider = NWSWeatherProvider(
+            httpClient: http,
+            baseURL: URL(string: "https://api.weather.gov")!,
+            calendar: Calendar(identifier: .gregorian)
+        )
+
+        let snapshot = try await provider.fetchWeather(for: Coordinate(latitude: 37.7749, longitude: -122.4194))
+
+        XCTAssertEqual(snapshot.current.source, "NWS hourly forecast")
+        XCTAssertEqual(snapshot.current.temperatureF, 61)
+        XCTAssertNil(snapshot.current.observationStation)
+    }
+
+    func testPointsRequestUsesLocaleIndependentDecimalSeparators() async throws {
+        let http = MockHTTPClient()
+        http.responses = [
+            "/points/37.7749,-122.4194": pointsWithoutStationsJSON,
+            "/gridpoints/MTR/85,105/forecast/hourly": hourlyJSON
+        ]
+        let provider = NWSWeatherProvider(
+            httpClient: http,
+            baseURL: URL(string: "https://api.weather.gov")!,
+            calendar: Calendar(identifier: .gregorian)
+        )
+
+        _ = try await provider.fetchWeather(for: Coordinate(latitude: 37.7749, longitude: -122.4194))
+
+        XCTAssertEqual(http.requests.first?.url?.path, "/points/37.7749,-122.4194")
+    }
+
     func testFetchWeatherUsesNearestStationObservationForCurrentConditions() async throws {
         let http = MockHTTPClient()
         http.responses = [
@@ -117,6 +154,20 @@ private let pointsJSON = """
   "properties": {
     "forecastHourly": "https://api.weather.gov/gridpoints/MTR/85,105/forecast/hourly",
     "observationStations": "https://api.weather.gov/gridpoints/MTR/85,105/stations",
+    "relativeLocation": {
+      "properties": {
+        "city": "San Francisco",
+        "state": "CA"
+      }
+    }
+  }
+}
+"""
+
+private let pointsWithoutStationsJSON = """
+{
+  "properties": {
+    "forecastHourly": "https://api.weather.gov/gridpoints/MTR/85,105/forecast/hourly",
     "relativeLocation": {
       "properties": {
         "city": "San Francisco",

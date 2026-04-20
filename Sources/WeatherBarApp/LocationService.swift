@@ -2,10 +2,12 @@ import CoreLocation
 import Foundation
 import WeatherBarCore
 
+@MainActor
 final class LocationService: NSObject, LocationProviding, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
     private let geocoder = CLGeocoder()
-    private var continuation: CheckedContinuation<LocationFix, Error>?
+    private var pendingRequests: [PendingLocationRequest] = []
+    private var isRequestInFlight = false
 
     override init() {
         super.init()
@@ -15,25 +17,31 @@ final class LocationService: NSObject, LocationProviding, CLLocationManagerDeleg
     }
 
     func currentLocation() async throws -> LocationFix {
-        try await withCheckedThrowingContinuation { continuation in
-            self.continuation = continuation
-
-            switch manager.authorizationStatus {
-            case .notDetermined:
-                manager.requestWhenInUseAuthorization()
-            case .authorizedAlways, .authorizedWhenInUse:
-                manager.requestLocation()
-            case .denied, .restricted:
-                finish(.failure(WeatherError.locationUnavailable("Location access is disabled for WeatherBar.")))
-            @unknown default:
-                finish(.failure(WeatherError.locationUnavailable("Location authorization is unavailable.")))
+        let id = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                pendingRequests.append(PendingLocationRequest(id: id, continuation: continuation))
+                startLocationRequestIfNeeded()
+            }
+        } onCancel: { [weak self] in
+            Task { @MainActor in
+                self?.cancelPendingRequest(id)
             }
         }
     }
 
-    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        switch manager.authorizationStatus {
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        let status = manager.authorizationStatus
+        Task { @MainActor [weak self] in
+            self?.handleAuthorizationStatus(status)
+        }
+    }
+
+    private func handleAuthorizationStatus(_ status: CLAuthorizationStatus) {
+        switch status {
         case .authorizedAlways, .authorizedWhenInUse:
+            guard !pendingRequests.isEmpty else { return }
+            isRequestInFlight = true
             manager.requestLocation()
         case .denied, .restricted:
             finish(.failure(WeatherError.locationUnavailable("Location access is disabled for WeatherBar.")))
@@ -44,7 +52,13 @@ final class LocationService: NSObject, LocationProviding, CLLocationManagerDeleg
         }
     }
 
-    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        Task { @MainActor [weak self] in
+            self?.handleUpdatedLocations(locations)
+        }
+    }
+
+    private func handleUpdatedLocations(_ locations: [CLLocation]) {
         guard let location = locations.last else {
             finish(.failure(WeatherError.locationUnavailable("macOS did not return a location.")))
             return
@@ -52,24 +66,57 @@ final class LocationService: NSObject, LocationProviding, CLLocationManagerDeleg
 
         let coordinate = Coordinate(latitude: location.coordinate.latitude, longitude: location.coordinate.longitude)
         geocoder.reverseGeocodeLocation(location) { [weak self] placemarks, _ in
-            let name = Self.bestName(from: placemarks?.first)
-            self?.finish(.success(LocationFix(
-                coordinate: coordinate,
-                horizontalAccuracyMeters: location.horizontalAccuracy >= 0 ? location.horizontalAccuracy : nil,
-                displayName: name,
-                resolvedAt: Date()
-            )))
+            Task { @MainActor in
+                let name = Self.bestName(from: placemarks?.first)
+                self?.finish(.success(LocationFix(
+                    coordinate: coordinate,
+                    horizontalAccuracyMeters: location.horizontalAccuracy >= 0 ? location.horizontalAccuracy : nil,
+                    displayName: name,
+                    resolvedAt: Date()
+                )))
+            }
         }
     }
 
-    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        finish(.failure(error))
+    nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        Task { @MainActor [weak self] in
+            self?.finish(.failure(error))
+        }
+    }
+
+    private func startLocationRequestIfNeeded() {
+        guard !pendingRequests.isEmpty, !isRequestInFlight else { return }
+
+        switch manager.authorizationStatus {
+        case .notDetermined:
+            isRequestInFlight = true
+            manager.requestWhenInUseAuthorization()
+        case .authorizedAlways, .authorizedWhenInUse:
+            isRequestInFlight = true
+            manager.requestLocation()
+        case .denied, .restricted:
+            finish(.failure(WeatherError.locationUnavailable("Location access is disabled for WeatherBar.")))
+        @unknown default:
+            finish(.failure(WeatherError.locationUnavailable("Location authorization is unavailable.")))
+        }
+    }
+
+    private func cancelPendingRequest(_ id: UUID) {
+        guard let index = pendingRequests.firstIndex(where: { $0.id == id }) else { return }
+        let request = pendingRequests.remove(at: index)
+        request.continuation.resume(throwing: CancellationError())
+        if pendingRequests.isEmpty {
+            geocoder.cancelGeocode()
+            manager.stopUpdatingLocation()
+            isRequestInFlight = false
+        }
     }
 
     private func finish(_ result: Result<LocationFix, Error>) {
-        guard let continuation else { return }
-        self.continuation = nil
-        continuation.resume(with: result)
+        let requests = pendingRequests
+        pendingRequests.removeAll()
+        isRequestInFlight = false
+        requests.forEach { $0.continuation.resume(with: result) }
     }
 
     private static func bestName(from placemark: CLPlacemark?) -> String? {
@@ -84,5 +131,10 @@ final class LocationService: NSObject, LocationProviding, CLLocationManagerDeleg
             return name
         }
         return nil
+    }
+
+    private struct PendingLocationRequest {
+        let id: UUID
+        let continuation: CheckedContinuation<LocationFix, Error>
     }
 }
