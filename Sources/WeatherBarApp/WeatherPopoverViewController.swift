@@ -2,7 +2,7 @@ import AppKit
 import WeatherBarCore
 
 final class WeatherPopoverViewController: NSViewController {
-    static let preferredSize = NSSize(width: 620, height: 520)
+    static let preferredSize = NSSize(width: 620, height: 490)
 
     private let onRefresh: () -> Void
     private let onSettings: () -> Void
@@ -24,13 +24,17 @@ final class WeatherPopoverViewController: NSViewController {
     }
 
     override func loadView() {
-        view = NSView(frame: NSRect(origin: .zero, size: Self.preferredSize))
-        view.wantsLayer = true
-        view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        let effectView = NSVisualEffectView(frame: NSRect(origin: .zero, size: Self.preferredSize))
+        effectView.material = .popover
+        effectView.blendingMode = .behindWindow
+        effectView.state = .active
+        effectView.wantsLayer = true
+        effectView.layer?.backgroundColor = WeatherPalette.glassOverlay.cgColor
+        view = effectView
 
         stack.orientation = .vertical
-        stack.spacing = 12
-        stack.edgeInsets = NSEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        stack.spacing = 10
+        stack.edgeInsets = NSEdgeInsets(top: 14, left: 14, bottom: 12, right: 14)
         stack.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(stack)
 
@@ -59,13 +63,13 @@ final class WeatherPopoverViewController: NSViewController {
         if let snapshot {
             let content = NSStackView()
             content.orientation = .horizontal
-            content.spacing = 14
+            content.spacing = 12
             content.distribution = .fill
             content.alignment = .top
 
             let days = NSStackView()
             days.orientation = .vertical
-            days.spacing = 3
+            days.spacing = 5
             days.widthAnchor.constraint(equalToConstant: Metrics.dayPaneWidth).isActive = true
             for day in snapshot.daily.prefix(7) {
                 let row = DayRowView(day: day) { [weak self] day in
@@ -75,10 +79,12 @@ final class WeatherPopoverViewController: NSViewController {
             }
 
             detailStack.orientation = .vertical
-            detailStack.spacing = 6
-            detailStack.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
+            detailStack.spacing = 7
+            detailStack.edgeInsets = NSEdgeInsets(top: 10, left: 12, bottom: 10, right: 12)
             detailStack.wantsLayer = true
-            detailStack.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+            detailStack.layer?.backgroundColor = WeatherPalette.panelFill.cgColor
+            detailStack.layer?.borderColor = WeatherPalette.panelStroke.cgColor
+            detailStack.layer?.borderWidth = 1
             detailStack.layer?.cornerRadius = 8
             detailStack.widthAnchor.constraint(equalToConstant: Metrics.detailPaneWidth).isActive = true
 
@@ -116,10 +122,12 @@ final class WeatherPopoverViewController: NSViewController {
         let iconName = snapshot?.current.condition.symbolName ?? "cloud"
         let icon = NSImageView(image: NSImage(systemSymbolName: iconName, accessibilityDescription: nil) ?? NSImage())
         icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 26, weight: .regular)
+        icon.contentTintColor = snapshot.map { WeatherPalette.accent(for: $0.current.condition) } ?? WeatherPalette.teal
+        icon.widthAnchor.constraint(equalToConstant: 32).isActive = true
 
         let copy = NSStackView()
         copy.orientation = .vertical
-        copy.spacing = 2
+        copy.spacing = 1
         if let snapshot {
             copy.addArrangedSubview(label(currentTitle(snapshot), style: .title))
             copy.addArrangedSubview(label(locationLine(snapshot, isLoading: isLoading), style: .secondary))
@@ -148,6 +156,8 @@ final class WeatherPopoverViewController: NSViewController {
     }
 
     private func renderDetails(for day: DailyForecast) {
+        preferredContentSize = Self.preferredSize
+        view.setFrameSize(Self.preferredSize)
         detailStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         detailStack.addArrangedSubview(label(dayTitle(day), style: .headline))
         detailStack.addArrangedSubview(label(detailLine(day), style: .secondary))
@@ -254,14 +264,17 @@ final class WeatherPopoverViewController: NSViewController {
         switch style {
         case .title:
             field.font = .systemFont(ofSize: 20, weight: .semibold)
+            field.textColor = WeatherPalette.ink
         case .headline:
             field.font = .systemFont(ofSize: 14, weight: .semibold)
+            field.textColor = WeatherPalette.ink
         case .secondary:
             field.font = .systemFont(ofSize: 12)
-            field.textColor = .secondaryLabelColor
+            field.textColor = WeatherPalette.secondaryInk
+            field.lineBreakMode = .byWordWrapping
         case .mono:
             field.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-            field.textColor = .secondaryLabelColor
+            field.textColor = WeatherPalette.secondaryInk
         }
         return field
     }
@@ -269,6 +282,7 @@ final class WeatherPopoverViewController: NSViewController {
     private func button(_ title: String, action: Selector) -> NSButton {
         let button = NSButton(title: title, target: self, action: action)
         button.bezelStyle = .rounded
+        button.controlSize = .small
         return button
     }
 
@@ -302,7 +316,7 @@ final class WeatherPopoverViewController: NSViewController {
     }
 
     private enum Metrics {
-        static let contentHeight: CGFloat = 350
+        static let contentHeight: CGFloat = 330
         static let dayPaneWidth: CGFloat = 280
         static let detailPaneWidth: CGFloat = 292
     }
@@ -311,27 +325,57 @@ final class WeatherPopoverViewController: NSViewController {
 final class DayRowView: NSView {
     private let onHover: (DailyForecast) -> Void
     private let day: DailyForecast
-    private let label: NSTextField
+    private let accent: RoundedFillView
+    private let dayLabel: NSTextField
+    private let summaryLabel: NSTextField
+    private let precipLabel: NSTextField
 
     init(day: DailyForecast, onHover: @escaping (DailyForecast) -> Void) {
         self.day = day
         self.onHover = onHover
-        self.label = NSTextField(labelWithString: "")
+        self.accent = RoundedFillView(fillColor: WeatherPalette.accent(for: day.condition), radius: 2)
+        self.dayLabel = NSTextField(labelWithString: Self.dayFormatter.string(from: day.date))
+        self.summaryLabel = NSTextField(labelWithString: "\(day.lowF)°/\(day.highF)°  \(day.summary)")
+        self.precipLabel = NSTextField(labelWithString: day.precipitationChance.map { "\($0)%" } ?? "--")
         super.init(frame: .zero)
 
         wantsLayer = true
-        layer?.cornerRadius = 6
-        label.stringValue = "\(Self.dayFormatter.string(from: day.date)): \(day.lowF)°/\(day.highF)° • \(day.summary) • \(day.precipitationChance.map { "\($0)%" } ?? "--")"
-        label.font = .systemFont(ofSize: 13)
-        label.lineBreakMode = .byTruncatingTail
-        label.maximumNumberOfLines = 1
-        label.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(label)
+        layer?.cornerRadius = 7
+        layer?.borderColor = WeatherPalette.rowStroke.cgColor
+        layer?.borderWidth = 1
+        layer?.backgroundColor = WeatherPalette.rowFill.cgColor
+
+        dayLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        dayLabel.textColor = WeatherPalette.ink
+        dayLabel.alignment = .left
+        summaryLabel.font = .systemFont(ofSize: 12)
+        summaryLabel.textColor = WeatherPalette.secondaryInk
+        summaryLabel.lineBreakMode = .byTruncatingTail
+        summaryLabel.maximumNumberOfLines = 1
+        precipLabel.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
+        precipLabel.textColor = WeatherPalette.accent(for: day.condition)
+        precipLabel.alignment = .right
+
+        [accent, dayLabel, summaryLabel, precipLabel].forEach {
+            $0.translatesAutoresizingMaskIntoConstraints = false
+            addSubview($0)
+        }
+
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 34),
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            label.centerYAnchor.constraint(equalTo: centerYAnchor)
+            heightAnchor.constraint(equalToConstant: 36),
+            accent.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            accent.widthAnchor.constraint(equalToConstant: 4),
+            accent.heightAnchor.constraint(equalToConstant: 24),
+            accent.centerYAnchor.constraint(equalTo: centerYAnchor),
+            dayLabel.leadingAnchor.constraint(equalTo: accent.trailingAnchor, constant: 8),
+            dayLabel.widthAnchor.constraint(equalToConstant: 34),
+            dayLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            summaryLabel.leadingAnchor.constraint(equalTo: dayLabel.trailingAnchor, constant: 6),
+            summaryLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            precipLabel.leadingAnchor.constraint(greaterThanOrEqualTo: summaryLabel.trailingAnchor, constant: 8),
+            precipLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            precipLabel.widthAnchor.constraint(equalToConstant: 36),
+            precipLabel.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
     }
 
@@ -351,14 +395,16 @@ final class DayRowView: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        layer?.backgroundColor = NSColor.selectedContentBackgroundColor.cgColor
-        label.textColor = .selectedMenuItemTextColor
+        layer?.backgroundColor = WeatherPalette.rowHoverFill.cgColor
+        dayLabel.textColor = WeatherPalette.ink
+        summaryLabel.textColor = WeatherPalette.ink
         onHover(day)
     }
 
     override func mouseExited(with event: NSEvent) {
-        layer?.backgroundColor = NSColor.clear.cgColor
-        label.textColor = .labelColor
+        layer?.backgroundColor = WeatherPalette.rowFill.cgColor
+        dayLabel.textColor = WeatherPalette.ink
+        summaryLabel.textColor = WeatherPalette.secondaryInk
     }
 
     private static let dayFormatter: DateFormatter = {

@@ -19,6 +19,13 @@ final class SettingsWindowController: NSWindowController {
             defer: false
         )
         window.title = "WeatherBar Settings"
+        let content = NSVisualEffectView()
+        content.material = .windowBackground
+        content.blendingMode = .behindWindow
+        content.state = .active
+        content.wantsLayer = true
+        content.layer?.backgroundColor = WeatherPalette.glassOverlay.cgColor
+        window.contentView = content
         super.init(window: window)
         buildUI()
         loadValues()
@@ -32,8 +39,8 @@ final class SettingsWindowController: NSWindowController {
         guard let contentView = window?.contentView else { return }
         let stack = NSStackView()
         stack.orientation = .vertical
-        stack.spacing = 12
-        stack.edgeInsets = NSEdgeInsets(top: 18, left: 18, bottom: 18, right: 18)
+        stack.spacing = 10
+        stack.edgeInsets = NSEdgeInsets(top: 16, left: 18, bottom: 14, right: 18)
         stack.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(stack)
         NSLayoutConstraint.activate([
@@ -59,7 +66,11 @@ final class SettingsWindowController: NSWindowController {
         actions.orientation = .horizontal
         actions.spacing = 8
         actions.addArrangedSubview(NSView())
-        actions.addArrangedSubview(NSButton(title: "Save", target: self, action: #selector(save)))
+        let saveButton = NSButton(title: "Save", target: self, action: #selector(save))
+        saveButton.bezelStyle = .rounded
+        saveButton.controlSize = .small
+        saveButton.contentTintColor = WeatherPalette.teal
+        actions.addArrangedSubview(saveButton)
         stack.addArrangedSubview(actions)
     }
 
@@ -68,9 +79,13 @@ final class SettingsWindowController: NSWindowController {
         row.orientation = .horizontal
         row.spacing = 10
         let label = NSTextField(labelWithString: title)
+        label.textColor = WeatherPalette.secondaryInk
         label.widthAnchor.constraint(equalToConstant: 110).isActive = true
         row.addArrangedSubview(label)
         row.addArrangedSubview(control)
+        if let textField = control as? NSTextField {
+            textField.bezelStyle = .roundedBezel
+        }
         return row
     }
 
