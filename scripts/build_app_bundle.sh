@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+pkill -x WeatherBarApp 2>/dev/null || true
 swift build -c debug
 
 APP="$ROOT/.build/WeatherBar.app"

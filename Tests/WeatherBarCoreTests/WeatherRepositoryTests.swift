@@ -55,7 +55,12 @@ private final class FakeProvider: WeatherProvider {
 }
 
 private struct StaticLocationProvider: LocationProviding {
-    func currentCoordinate() async throws -> Coordinate {
-        Coordinate(latitude: 37.0, longitude: -122.0)
+    func currentLocation() async throws -> LocationFix {
+        LocationFix(
+            coordinate: Coordinate(latitude: 37.0, longitude: -122.0),
+            horizontalAccuracyMeters: 25,
+            displayName: "Test",
+            resolvedAt: Date()
+        )
     }
 }

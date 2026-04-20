@@ -24,8 +24,8 @@ public actor WeatherRepository {
             return cachedSnapshot
         }
 
-        let coordinate = try await locationProvider.currentCoordinate()
-        let snapshot = try await provider.fetchWeather(for: coordinate)
+        let location = try await locationProvider.currentLocation()
+        let snapshot = try await provider.fetchWeather(for: location.coordinate).withLocation(location)
         cachedSnapshot = snapshot
         return snapshot
     }

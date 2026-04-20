@@ -34,11 +34,20 @@ public final class NWSWeatherProvider: WeatherProvider {
             throw WeatherError.noForecast
         }
 
-        let current = CurrentWeather(
+        let observed = try? await currentObservation(
+            stationsURLString: points.properties.observationStations,
+            coordinate: coordinate,
+            fallbackPeriod: currentPeriod
+        )
+
+        let current = observed ?? CurrentWeather(
             temperatureF: currentPeriod.temperature,
+            apparentTemperatureF: currentPeriod.temperature,
             condition: WeatherCondition.classify(currentPeriod.shortForecast),
             summary: currentPeriod.shortForecast,
-            precipitationChance: currentPeriod.probabilityOfPrecipitation.value
+            precipitationChance: currentPeriod.probabilityOfPrecipitation.intValue,
+            wind: currentPeriod.wind,
+            source: "NWS hourly forecast"
         )
 
         let daily = Self.dailyForecasts(from: periods, calendar: calendar)
@@ -51,8 +60,58 @@ public final class NWSWeatherProvider: WeatherProvider {
             daily: daily,
             fetchedAt: Date(),
             sourceDescription: "National Weather Service",
-            locationName: points.properties.relativeLocation?.properties.displayName
+            locationName: points.properties.relativeLocation?.properties.displayName,
+            coordinate: coordinate
         )
+    }
+
+    private func currentObservation(
+        stationsURLString: String,
+        coordinate: Coordinate,
+        fallbackPeriod: NWSPeriod
+    ) async throws -> CurrentWeather? {
+        guard let stationsURL = URL(string: stationsURLString) else { return nil }
+        let stations = try await get(StationsResponse.self, url: stationsURL)
+
+        for feature in stations.features.prefix(5) {
+            guard let observationURL = URL(string: "\(feature.properties.stationURL)/observations/latest") else {
+                continue
+            }
+
+            let observation = try? await get(ObservationResponse.self, url: observationURL)
+            guard let observation,
+                  let tempC = observation.properties.temperature.value else {
+                continue
+            }
+
+            let station = ObservationStation(
+                identifier: feature.properties.stationIdentifier,
+                name: feature.properties.name,
+                distanceMiles: feature.distanceMiles(from: coordinate)
+            )
+            let summary = observation.properties.textDescription?.nilIfBlank ?? fallbackPeriod.shortForecast
+            return CurrentWeather(
+                temperatureF: Self.celsiusToFahrenheit(tempC),
+                apparentTemperatureF: observation.properties.heatIndex.value.map(Self.celsiusToFahrenheit)
+                    ?? observation.properties.windChill.value.map(Self.celsiusToFahrenheit),
+                condition: WeatherCondition.classify(summary),
+                summary: summary,
+                precipitationChance: fallbackPeriod.probabilityOfPrecipitation.intValue,
+                humidity: observation.properties.relativeHumidity.value.map { Int($0.rounded()) },
+                dewPointF: observation.properties.dewpoint.value.map(Self.celsiusToFahrenheit),
+                wind: Wind(
+                    speedMph: observation.properties.windSpeed.value.map(Self.metersPerSecondToMilesPerHour),
+                    directionDegrees: observation.properties.windDirection.value.map { Int($0.rounded()) },
+                    directionText: observation.properties.windDirection.value.map { Wind.cardinalDirection(Int($0.rounded())) },
+                    gustMph: observation.properties.windGust.value.map(Self.metersPerSecondToMilesPerHour)
+                ),
+                observationStation: station,
+                observedAt: observation.properties.timestamp,
+                source: "NWS station observation"
+            )
+        }
+
+        return nil
     }
 
     public static func dailyForecasts(from periods: [NWSPeriod], calendar: Calendar) -> [DailyForecast] {
@@ -68,17 +127,17 @@ public final class NWSWeatherProvider: WeatherProvider {
 
             let high = dayPeriods.map(\.temperature).max() ?? first.temperature
             let low = dayPeriods.map(\.temperature).min() ?? first.temperature
-            let precip = dayPeriods.compactMap { $0.probabilityOfPrecipitation.value }.max()
+            let precip = dayPeriods.compactMap { $0.probabilityOfPrecipitation.intValue }.max()
             let representative = dayPeriods.first(where: { $0.isDaytime }) ?? first
 
             let hourly = dayPeriods.map { period in
                 HourlyForecast(
                     startTime: period.startTime,
                     temperatureF: period.temperature,
-                    precipitationChance: period.probabilityOfPrecipitation.value,
+                    precipitationChance: period.probabilityOfPrecipitation.intValue,
                     condition: WeatherCondition.classify(period.shortForecast),
                     summary: period.shortForecast,
-                    wind: "\(period.windSpeed) \(period.windDirection)"
+                    wind: period.wind
                 )
             }
 
@@ -119,6 +178,14 @@ public final class NWSWeatherProvider: WeatherProvider {
     private func format(_ value: Double) -> String {
         String(format: "%.4f", value)
     }
+
+    private static func celsiusToFahrenheit(_ celsius: Double) -> Int {
+        Int((celsius * 9 / 5 + 32).rounded())
+    }
+
+    private static func metersPerSecondToMilesPerHour(_ metersPerSecond: Double) -> Double {
+        metersPerSecond * 2.2369362921
+    }
 }
 
 public struct PointsResponse: Decodable {
@@ -127,6 +194,7 @@ public struct PointsResponse: Decodable {
 
 public struct PointsProperties: Decodable {
     public let forecastHourly: String
+    public let observationStations: String
     public let relativeLocation: RelativeLocation?
 }
 
@@ -201,12 +269,97 @@ public struct NWSPeriod: Decodable, Equatable {
         self.shortForecast = shortForecast
         self.detailedForecast = detailedForecast
     }
+
+    public var wind: Wind {
+        Wind(
+            speedMph: Double(windSpeed.split(separator: " ").first ?? ""),
+            directionDegrees: nil,
+            directionText: windDirection
+        )
+    }
 }
 
 public struct QuantitativeValue: Decodable, Equatable {
-    public let value: Int?
+    public let value: Double?
 
-    public init(value: Int?) {
+    public init(value: Double?) {
         self.value = value
+    }
+
+    public var intValue: Int? {
+        value.map { Int($0.rounded()) }
+    }
+}
+
+public struct StationsResponse: Decodable {
+    public let features: [StationFeature]
+}
+
+public struct StationFeature: Decodable {
+    public let geometry: StationGeometry
+    public let properties: StationProperties
+
+    public func distanceMiles(from coordinate: Coordinate) -> Double? {
+        guard geometry.coordinates.count >= 2 else { return nil }
+        let longitude = geometry.coordinates[0]
+        let latitude = geometry.coordinates[1]
+        return haversineMiles(
+            lat1: coordinate.latitude,
+            lon1: coordinate.longitude,
+            lat2: latitude,
+            lon2: longitude
+        )
+    }
+
+    private func haversineMiles(lat1: Double, lon1: Double, lat2: Double, lon2: Double) -> Double {
+        let earthRadiusKm = 6371.0088
+        let dLat = (lat2 - lat1) * .pi / 180
+        let dLon = (lon2 - lon1) * .pi / 180
+        let a = sin(dLat / 2) * sin(dLat / 2)
+            + cos(lat1 * .pi / 180) * cos(lat2 * .pi / 180) * sin(dLon / 2) * sin(dLon / 2)
+        return earthRadiusKm * 2 * asin(sqrt(a)) * 0.621371
+    }
+}
+
+public struct StationGeometry: Decodable {
+    public let coordinates: [Double]
+}
+
+public struct StationProperties: Decodable {
+    public let stationIdentifier: String
+    public let name: String
+    public let stationURL: String
+
+    enum CodingKeys: String, CodingKey {
+        case stationIdentifier
+        case name
+        case stationURL = "@id"
+    }
+}
+
+public struct ObservationResponse: Decodable {
+    public let properties: ObservationProperties
+}
+
+public struct ObservationProperties: Decodable {
+    public let timestamp: Date
+    public let textDescription: String?
+    public let temperature: DoubleQuantitativeValue
+    public let dewpoint: DoubleQuantitativeValue
+    public let windDirection: DoubleQuantitativeValue
+    public let windSpeed: DoubleQuantitativeValue
+    public let windGust: DoubleQuantitativeValue
+    public let relativeHumidity: DoubleQuantitativeValue
+    public let windChill: DoubleQuantitativeValue
+    public let heatIndex: DoubleQuantitativeValue
+}
+
+public struct DoubleQuantitativeValue: Decodable, Equatable {
+    public let value: Double?
+}
+
+private extension String {
+    var nilIfBlank: String? {
+        trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : self
     }
 }

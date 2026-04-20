@@ -29,7 +29,7 @@ final class NWSWeatherProviderTests: XCTestCase {
                         isDaytime: hour == 12,
                         temperature: 50 + day + hour / 6,
                         temperatureUnit: "F",
-                        probabilityOfPrecipitation: QuantitativeValue(value: day * 10),
+                        probabilityOfPrecipitation: QuantitativeValue(value: Double(day * 10)),
                         windSpeed: "5 mph",
                         windDirection: "NW",
                         shortForecast: hour == 12 ? "Sunny" : "Mostly Cloudy",
@@ -70,6 +70,31 @@ final class NWSWeatherProviderTests: XCTestCase {
         XCTAssertEqual(snapshot.daily.first?.highF, 64)
         XCTAssertTrue(http.requests.allSatisfy { $0.value(forHTTPHeaderField: "User-Agent") != nil })
     }
+
+    func testFetchWeatherUsesNearestStationObservationForCurrentConditions() async throws {
+        let http = MockHTTPClient()
+        http.responses = [
+            "/points/37.7749,-122.4194": pointsJSON,
+            "/gridpoints/MTR/85,105/forecast/hourly": hourlyJSON,
+            "/gridpoints/MTR/85,105/stations": stationsJSON,
+            "/stations/SFOC1/observations/latest": observationJSON
+        ]
+
+        let provider = NWSWeatherProvider(
+            httpClient: http,
+            baseURL: URL(string: "https://api.weather.gov")!,
+            calendar: Calendar(identifier: .gregorian)
+        )
+
+        let snapshot = try await provider.fetchWeather(for: Coordinate(latitude: 37.7749, longitude: -122.4194))
+
+        XCTAssertEqual(snapshot.current.temperatureF, 55)
+        XCTAssertEqual(snapshot.current.condition, .fog)
+        XCTAssertEqual(snapshot.current.source, "NWS station observation")
+        XCTAssertEqual(snapshot.current.observationStation?.identifier, "SFOC1")
+        XCTAssertEqual(snapshot.current.humidity, 86)
+        XCTAssertEqual(snapshot.current.dewPointF, 52)
+    }
 }
 
 private final class MockHTTPClient: HTTPClient {
@@ -91,6 +116,7 @@ private let pointsJSON = """
 {
   "properties": {
     "forecastHourly": "https://api.weather.gov/gridpoints/MTR/85,105/forecast/hourly",
+    "observationStations": "https://api.weather.gov/gridpoints/MTR/85,105/stations",
     "relativeLocation": {
       "properties": {
         "city": "San Francisco",
@@ -134,6 +160,40 @@ private let hourlyJSON = """
         "detailedForecast": "Sunny."
       }
     ]
+  }
+}
+"""
+
+private let stationsJSON = """
+{
+  "features": [
+    {
+      "geometry": {
+        "coordinates": [-122.4269, 37.8060]
+      },
+      "properties": {
+        "stationIdentifier": "SFOC1",
+        "name": "San Francisco Downtown",
+        "@id": "https://api.weather.gov/stations/SFOC1"
+      }
+    }
+  ]
+}
+"""
+
+private let observationJSON = """
+{
+  "properties": {
+    "timestamp": "2026-04-19T16:00:00Z",
+    "textDescription": "Fog/Mist",
+    "temperature": { "value": 12.8 },
+    "dewpoint": { "value": 11.2 },
+    "windDirection": { "value": 250 },
+    "windSpeed": { "value": 5 },
+    "windGust": { "value": 8 },
+    "relativeHumidity": { "value": 86 },
+    "windChill": { "value": null },
+    "heatIndex": { "value": null }
   }
 }
 """

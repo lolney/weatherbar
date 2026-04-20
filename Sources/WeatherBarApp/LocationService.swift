@@ -4,15 +4,17 @@ import WeatherBarCore
 
 final class LocationService: NSObject, LocationProviding, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
-    private var continuation: CheckedContinuation<Coordinate, Error>?
+    private let geocoder = CLGeocoder()
+    private var continuation: CheckedContinuation<LocationFix, Error>?
 
     override init() {
         super.init()
         manager.delegate = self
-        manager.desiredAccuracy = kCLLocationAccuracyThreeKilometers
+        manager.desiredAccuracy = kCLLocationAccuracyBest
+        manager.distanceFilter = kCLDistanceFilterNone
     }
 
-    func currentCoordinate() async throws -> Coordinate {
+    func currentLocation() async throws -> LocationFix {
         try await withCheckedThrowingContinuation { continuation in
             self.continuation = continuation
 
@@ -47,16 +49,40 @@ final class LocationService: NSObject, LocationProviding, CLLocationManagerDeleg
             finish(.failure(WeatherError.locationUnavailable("macOS did not return a location.")))
             return
         }
-        finish(.success(Coordinate(latitude: location.coordinate.latitude, longitude: location.coordinate.longitude)))
+
+        let coordinate = Coordinate(latitude: location.coordinate.latitude, longitude: location.coordinate.longitude)
+        geocoder.reverseGeocodeLocation(location) { [weak self] placemarks, _ in
+            let name = Self.bestName(from: placemarks?.first)
+            self?.finish(.success(LocationFix(
+                coordinate: coordinate,
+                horizontalAccuracyMeters: location.horizontalAccuracy >= 0 ? location.horizontalAccuracy : nil,
+                displayName: name,
+                resolvedAt: Date()
+            )))
+        }
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         finish(.failure(error))
     }
 
-    private func finish(_ result: Result<Coordinate, Error>) {
+    private func finish(_ result: Result<LocationFix, Error>) {
         guard let continuation else { return }
         self.continuation = nil
         continuation.resume(with: result)
+    }
+
+    private static func bestName(from placemark: CLPlacemark?) -> String? {
+        guard let placemark else { return nil }
+        if let subLocality = placemark.subLocality, !subLocality.isEmpty {
+            return subLocality
+        }
+        if let locality = placemark.locality, !locality.isEmpty {
+            return locality
+        }
+        if let name = placemark.name, !name.isEmpty {
+            return name
+        }
+        return nil
     }
 }

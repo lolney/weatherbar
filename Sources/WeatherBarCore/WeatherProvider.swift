@@ -5,7 +5,13 @@ public protocol WeatherProvider {
 }
 
 public protocol LocationProviding {
-    func currentCoordinate() async throws -> Coordinate
+    func currentLocation() async throws -> LocationFix
+}
+
+public extension LocationProviding {
+    func currentCoordinate() async throws -> Coordinate {
+        try await currentLocation().coordinate
+    }
 }
 
 public enum WeatherError: Error, Equatable, LocalizedError {
