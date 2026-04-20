@@ -68,23 +68,3 @@ enum WeatherPalette {
         })
     }
 }
-
-final class RoundedFillView: NSView {
-    var fillColor: NSColor {
-        didSet {
-            layer?.backgroundColor = fillColor.cgColor
-        }
-    }
-
-    init(fillColor: NSColor, radius: CGFloat) {
-        self.fillColor = fillColor
-        super.init(frame: .zero)
-        wantsLayer = true
-        layer?.cornerRadius = radius
-        layer?.backgroundColor = fillColor.cgColor
-    }
-
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-}

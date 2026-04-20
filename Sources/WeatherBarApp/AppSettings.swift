@@ -1,14 +1,32 @@
 import Foundation
 import WeatherBarCore
 
-enum LocationMode: String {
+enum LocationMode: String, CaseIterable, Identifiable {
     case current
     case manual
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .current: return "Use Current Location"
+        case .manual: return "Manual Location"
+        }
+    }
 }
 
-enum ProviderMode: String {
+enum ProviderMode: String, CaseIterable, Identifiable {
     case nwsWithOpenMeteo
     case openMeteoOnly
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .nwsWithOpenMeteo: return "NWS + Open-Meteo Details"
+        case .openMeteoOnly: return "Open-Meteo Only"
+        }
+    }
 }
 
 final class AppSettings {
