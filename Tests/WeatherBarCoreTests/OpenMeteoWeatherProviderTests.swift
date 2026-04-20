@@ -118,6 +118,90 @@ final class OpenMeteoWeatherProviderTests: XCTestCase {
         XCTAssertEqual(snapshot.daily[0].hourly[0].uvIndex, 4.0)
         XCTAssertEqual(snapshot.daily[0].hourly[0].humidity, 62)
     }
+
+    func testCompositeProviderToleratesDuplicateSupplementalHourlyTimestamps() async throws {
+        let day = date("2026-11-01T00:00:00-07:00")
+        let repeatedHour = date("2026-11-01T01:00:00-07:00")
+        let primary = StaticProvider(snapshot: WeatherSnapshot(
+            current: CurrentWeather(
+                temperatureF: 50,
+                condition: .cloudy,
+                summary: "Cloudy",
+                precipitationChance: nil
+            ),
+            daily: [
+                DailyForecast(
+                    date: day,
+                    highF: 55,
+                    lowF: 47,
+                    precipitationChance: nil,
+                    condition: .cloudy,
+                    summary: "Cloudy",
+                    hourly: [
+                        HourlyForecast(
+                            startTime: repeatedHour,
+                            temperatureF: 50,
+                            precipitationChance: nil,
+                            condition: .cloudy,
+                            summary: "Cloudy"
+                        )
+                    ]
+                )
+            ],
+            fetchedAt: repeatedHour,
+            sourceDescription: "National Weather Service",
+            locationName: "Test"
+        ))
+        let supplement = StaticProvider(snapshot: WeatherSnapshot(
+            current: CurrentWeather(
+                temperatureF: 51,
+                condition: .partlyCloudy,
+                summary: "Partly Cloudy",
+                precipitationChance: nil
+            ),
+            daily: [
+                DailyForecast(
+                    date: day,
+                    highF: 56,
+                    lowF: 48,
+                    precipitationChance: 20,
+                    condition: .partlyCloudy,
+                    summary: "Partly Cloudy",
+                    hourly: [
+                        HourlyForecast(
+                            startTime: repeatedHour,
+                            temperatureF: 51,
+                            precipitationChance: 10,
+                            uvIndex: 1.0,
+                            humidity: 70,
+                            condition: .partlyCloudy,
+                            summary: "Partly Cloudy"
+                        ),
+                        HourlyForecast(
+                            startTime: repeatedHour,
+                            temperatureF: 52,
+                            precipitationChance: 30,
+                            uvIndex: 2.0,
+                            humidity: 75,
+                            condition: .rain,
+                            summary: "Rain"
+                        )
+                    ]
+                )
+            ],
+            fetchedAt: repeatedHour,
+            sourceDescription: "Open-Meteo",
+            locationName: nil
+        ))
+        let provider = CompositeWeatherProvider(primary: primary, supplement: supplement)
+
+        let snapshot = try await provider.fetchWeather(for: Coordinate(latitude: 37.7651, longitude: -122.4497))
+
+        XCTAssertEqual(snapshot.daily[0].hourly[0].uvIndex, 2.0)
+        XCTAssertEqual(snapshot.daily[0].hourly[0].humidity, 75)
+        XCTAssertEqual(snapshot.daily[0].hourly[0].precipitationChance, 30)
+        XCTAssertEqual(snapshot.daily[0].hourly[0].condition, .cloudy)
+    }
 }
 
 private final class MockOpenMeteoHTTPClient: HTTPClient {

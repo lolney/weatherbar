@@ -124,7 +124,10 @@ public final class CompositeWeatherProvider: WeatherProvider {
 
 private extension WeatherSnapshot {
     func mergingDetails(from supplement: WeatherSnapshot) -> WeatherSnapshot {
-        let supplementalDays = Dictionary(uniqueKeysWithValues: supplement.daily.map { ($0.date, $0) })
+        let supplementalDays = Dictionary(
+            supplement.daily.map { ($0.date, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
         let mergedDays = daily.map { day in
             guard let supplemental = supplementalDays[day.date] else { return day }
             return DailyForecast(
@@ -158,7 +161,10 @@ private extension WeatherSnapshot {
     }
 
     func mergeHourly(primary: [HourlyForecast], supplemental: [HourlyForecast]) -> [HourlyForecast] {
-        let supplementalByHour = Dictionary(uniqueKeysWithValues: supplemental.map { ($0.startTime, $0) })
+        let supplementalByHour = Dictionary(
+            supplemental.map { ($0.startTime, $0) },
+            uniquingKeysWith: { _, latest in latest }
+        )
         return primary.map { hour in
             guard let detail = supplementalByHour[hour.startTime] else { return hour }
             return HourlyForecast(

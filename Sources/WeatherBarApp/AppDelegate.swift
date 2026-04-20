@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var backgroundTask: Task<Void, Never>?
     private var retryTask: Task<Void, Never>?
     private var consecutiveFailures = 0
+    private var refreshGeneration = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -69,6 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popoverController = WeatherPopoverViewController(
             onRefresh: { [weak self] in self?.refresh(force: true) },
             onSettings: { [weak self] in self?.showSettings() },
+            onSelectLocation: { [weak self] locationID in self?.selectLocation(locationID) },
+            onAddLocation: { [weak self] in self?.showSettings() },
             onQuit: { NSApp.terminate(nil) }
         )
         popover.contentViewController = popoverController
@@ -93,14 +96,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settingsWindowController = SettingsWindowController(
                 settings: settings,
                 onSave: { [weak self] in
-                    self?.configureRepository()
-                    self?.snapshot = nil
-                    self?.refresh(force: true)
+                    self?.reloadSettingsAndRefresh()
                 }
             )
         }
         settingsWindowController?.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func selectLocation(_ locationID: String) {
+        guard settings.selectedLocationID != locationID else { return }
+        settings.selectedLocationID = locationID
+        reloadSettingsAndRefresh()
+    }
+
+    private func reloadSettingsAndRefresh() {
+        refreshGeneration += 1
+        refreshTask?.cancel()
+        retryTask?.cancel()
+        isLoading = false
+        consecutiveFailures = 0
+        lastError = nil
+        snapshot = nil
+        configureRepository()
+        updateStatusButton()
+        rebuildPopover()
+        refresh(force: true)
     }
 
     private func startBackgroundRefresh() {
@@ -138,14 +159,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func refresh(force: Bool) {
         guard !isLoading else { return }
         isLoading = true
+        let generation = refreshGeneration
         rebuildPopover()
 
         refreshTask?.cancel()
-        refreshTask = Task { [weak self] in
+        refreshTask = Task { [weak self, generation] in
             guard let self else { return }
             do {
                 let fresh = try await repository.refresh(force: force)
                 await MainActor.run {
+                    guard generation == self.refreshGeneration else { return }
                     self.snapshot = fresh
                     self.lastError = nil
                     self.consecutiveFailures = 0
@@ -155,6 +178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             } catch {
                 await MainActor.run {
+                    guard generation == self.refreshGeneration else { return }
                     self.lastError = error
                     self.consecutiveFailures += 1
                     self.isLoading = false
@@ -187,6 +211,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func rebuildPopover() {
         popover.contentSize = WeatherPopoverViewController.preferredSize
-        popoverController.render(snapshot: snapshot, isLoading: isLoading, error: lastError)
+        popoverController.render(
+            snapshot: snapshot,
+            isLoading: isLoading,
+            error: lastError,
+            savedLocations: settings.savedLocations,
+            selectedLocationID: settings.selectedLocationID
+        )
     }
 }
