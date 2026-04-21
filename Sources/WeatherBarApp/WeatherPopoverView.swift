@@ -296,7 +296,7 @@ private struct ForecastDetailView: View {
                 Spacer(minLength: 0)
             } else {
                 HourlyTrendPanel(hours: hours)
-                HourlyTable(hours: hours)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
         .padding(.vertical, 10)
@@ -475,40 +475,74 @@ private struct HourlyTrendPanel: View {
         hours.map { $0.uvIndex ?? 0 }
     }
 
+    private var windSpeeds: [Double] {
+        hours.map { $0.wind?.speedMph ?? 0 }
+    }
+
+    private var gustSpeeds: [Double?] {
+        hours.map { $0.wind?.gustMph }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            TrendStripRow(
-                label: "Temp",
-                summary: "\(Int(temperatures.min() ?? 0))-\(Int(temperatures.max() ?? 0))°",
-                contentHeight: 24
-            ) {
-                TemperatureSparkline(values: temperatures)
-            }
+        GeometryReader { proxy in
+            let spacing: CGFloat = 10
+            let axisHeight: CGFloat = 14
+            let uvHeight: CGFloat = 22
+            let availableForMajorRows = max(
+                120,
+                proxy.size.height - axisHeight - uvHeight - (spacing * 4)
+            )
+            let majorRowHeight = max(34, availableForMajorRows / 3)
 
-            TrendStripRow(
-                label: "Rain",
-                summary: "\(Int(precipitation.max() ?? 0))%",
-                contentHeight: 24
-            ) {
-                ProbabilityBarStrip(hours: hours, values: precipitation, color: Color(nsColor: WeatherPalette.sky))
-            }
+            VStack(alignment: .leading, spacing: spacing) {
+                TrendStripRow(
+                    label: "Temp",
+                    summary: "\(Int(temperatures.min() ?? 0))-\(Int(temperatures.max() ?? 0))°",
+                    contentHeight: majorRowHeight
+                ) {
+                    TemperatureSparkline(values: temperatures)
+                }
 
-            TrendStripRow(
-                label: "UV",
-                summary: Self.uvFormatter.string(from: NSNumber(value: uvValues.max() ?? 0)) ?? "0",
-                contentHeight: 14
-            ) {
-                UVHeatStrip(values: uvValues)
-            }
+                TrendStripRow(
+                    label: "Rain",
+                    summary: "\(Int(precipitation.max() ?? 0))%",
+                    contentHeight: majorRowHeight
+                ) {
+                    ProbabilityBarStrip(hours: hours, values: precipitation, color: Color(nsColor: WeatherPalette.sky))
+                }
 
-            HourlyAxisLabels(hours: hours)
+                TrendStripRow(
+                    label: "Wind",
+                    summary: windSummary,
+                    contentHeight: majorRowHeight
+                ) {
+                    WindSpeedSparkline(hours: hours, values: windSpeeds, gusts: gustSpeeds)
+                }
+
+                TrendStripRow(
+                    label: "UV",
+                    summary: Self.uvFormatter.string(from: NSNumber(value: uvValues.max() ?? 0)) ?? "0",
+                    contentHeight: uvHeight
+                ) {
+                    UVHeatStrip(values: uvValues)
+                }
+
+                HourlyAxisLabels(hours: hours)
+                    .frame(height: axisHeight)
+            }
         }
-        .padding(.vertical, 4)
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(Color(nsColor: WeatherPalette.rowStroke))
                 .frame(height: 0.5)
         }
+    }
+
+    private var windSummary: String {
+        if let peakGust = gustSpeeds.compactMap({ $0 }).max(), peakGust > 0 {
+            return "\(Int(peakGust.rounded())) gust"
+        }
+        return "\(Int((windSpeeds.max() ?? 0).rounded())) mph"
     }
 
     private static let uvFormatter: NumberFormatter = {
@@ -530,7 +564,7 @@ private struct TrendStripRow<Content: View>: View {
             Text(label.uppercased())
                 .font(.system(size: 7.5, weight: .semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 28, alignment: .leading)
+                .frame(width: TrendLayout.labelWidth, alignment: .leading)
 
             content()
                 .frame(maxWidth: .infinity)
@@ -539,7 +573,7 @@ private struct TrendStripRow<Content: View>: View {
             Text(summary)
                 .font(.system(size: 9, weight: .medium, design: .monospaced))
                 .foregroundStyle(Color(nsColor: WeatherPalette.secondaryInk))
-                .frame(width: 58, alignment: .trailing)
+                .frame(width: TrendLayout.summaryWidth, alignment: .trailing)
         }
     }
 }
@@ -695,23 +729,33 @@ private struct HourlyAxisLabels: View {
 
     private var tickHours: [HourlyForecast] {
         guard !hours.isEmpty else { return [] }
-        let candidateIndices = [0, hours.count / 3, (2 * hours.count) / 3, hours.count - 1]
-        let uniqueIndices = Array(Set(candidateIndices)).sorted()
+        let targetLabelCount = min(8, max(4, hours.count))
+        let tickStep = max(1, Int(ceil(Double(hours.count - 1) / Double(max(1, targetLabelCount - 1)))))
+        var indices = Array(Swift.stride(from: 0, to: hours.count, by: tickStep))
+        if indices.last != hours.count - 1 {
+            indices.append(hours.count - 1)
+        }
+        let uniqueIndices = Array(Set(indices)).sorted()
         return uniqueIndices.map { hours[$0] }
     }
 
     var body: some View {
-        HStack {
-            ForEach(Array(tickHours.enumerated()), id: \.offset) { index, hour in
-                Text(Self.timeFormatter.string(from: hour.startTime))
-                    .font(.system(size: 7.5, weight: .medium, design: .monospaced))
-                    .foregroundStyle(Color(nsColor: WeatherPalette.secondaryInk))
-                if index < tickHours.count - 1 {
-                    Spacer(minLength: 0)
+        HStack(spacing: 8) {
+            Color.clear.frame(width: TrendLayout.labelWidth)
+
+            HStack {
+                ForEach(Array(tickHours.enumerated()), id: \.offset) { index, hour in
+                    Text(Self.timeFormatter.string(from: hour.startTime))
+                        .font(.system(size: 7.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Color(nsColor: WeatherPalette.secondaryInk))
+                    if index < tickHours.count - 1 {
+                        Spacer(minLength: 0)
+                    }
                 }
             }
+
+            Color.clear.frame(width: TrendLayout.summaryWidth)
         }
-        .padding(.leading, 36)
     }
 
     private static let timeFormatter: DateFormatter = {
@@ -744,6 +788,93 @@ private struct TemperatureAnnotation: View {
     }
 }
 
+private struct WindSpeedSparkline: View {
+    let hours: [HourlyForecast]
+    let values: [Double]
+    let gusts: [Double?]
+
+    private var range: ClosedRange<Double> {
+        let baseMin = values.min() ?? 0
+        let gustMax = gusts.compactMap { $0 }.max() ?? 0
+        let maxValue = max(values.max() ?? 0, gustMax)
+        return min(baseMin, 0)...max(maxValue, max(baseMin, 0) + 1)
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                let baseline = proxy.size.height * 0.82
+                Rectangle()
+                    .fill(Color(nsColor: WeatherPalette.rowStroke))
+                    .frame(height: 0.5)
+                    .offset(y: baseline)
+
+                Path { path in
+                    for index in values.indices {
+                        let point = point(for: values[index], at: index, in: proxy.size)
+                        if index == values.startIndex {
+                            path.move(to: point)
+                        } else {
+                            path.addLine(to: point)
+                        }
+                    }
+                }
+                .stroke(Color(nsColor: WeatherPalette.mist), lineWidth: 1.4)
+
+                ForEach(values.indices, id: \.self) { index in
+                    if let gust = gusts[index], gust > values[index] {
+                        let speedPoint = point(for: values[index], at: index, in: proxy.size)
+                        let gustPoint = point(for: gust, at: index, in: proxy.size)
+                        Path { path in
+                            path.move(to: speedPoint)
+                            path.addLine(to: gustPoint)
+                        }
+                        .stroke(Color(nsColor: WeatherPalette.rowStroke), style: StrokeStyle(lineWidth: 0.8, dash: [2, 2]))
+                    }
+                }
+
+                if let peakIndex = values.indices.max(by: { peakValue(at: $0) < peakValue(at: $1) }) {
+                    let peakPoint = point(for: peakValue(at: peakIndex), at: peakIndex, in: proxy.size)
+                    let label = "\(Self.timeFormatter.string(from: hours[peakIndex].startTime)) \(Int(peakValue(at: peakIndex).rounded()))"
+
+                    Text(label)
+                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Color(nsColor: WeatherPalette.mist))
+                        .frame(width: 64, alignment: .center)
+                        .position(
+                            x: min(max(32, peakPoint.x), max(32, proxy.size.width - 32)),
+                            y: max(6, peakPoint.y - 8)
+                        )
+
+                    Circle()
+                        .fill(Color(nsColor: WeatherPalette.mist))
+                        .frame(width: 4, height: 4)
+                        .position(peakPoint)
+                }
+            }
+        }
+    }
+
+    private func peakValue(at index: Int) -> Double {
+        max(values[index], gusts[index] ?? values[index])
+    }
+
+    private func point(for value: Double, at index: Int, in size: CGSize) -> CGPoint {
+        let xFraction = values.count <= 1 ? 0 : Double(index) / Double(values.count - 1)
+        let yFraction = range.upperBound == range.lowerBound ? 0.5 : (value - range.lowerBound) / (range.upperBound - range.lowerBound)
+        return CGPoint(
+            x: size.width * xFraction,
+            y: (size.height * 0.86) - ((size.height * 0.62) * yFraction)
+        )
+    }
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "ha"
+        return formatter
+    }()
+}
+
 private enum ForecastStyling {
     static func uvColor(for uv: Double) -> Color {
         switch uv {
@@ -759,6 +890,11 @@ private enum ForecastStyling {
             return Color(nsColor: WeatherPalette.plum)
         }
     }
+}
+
+private enum TrendLayout {
+    static let labelWidth: CGFloat = 28
+    static let summaryWidth: CGFloat = 64
 }
 
 private struct HourlyTable: View {
