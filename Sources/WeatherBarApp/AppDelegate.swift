@@ -3,13 +3,23 @@ import Foundation
 import WeatherBarCore
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
+    private struct RepositoryKey: Hashable {
+        let providerMode: ProviderMode
+        let locationID: String
+    }
+
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let settings = AppSettings.shared
     private let popover = NSPopover()
     private var popoverController: WeatherPopoverViewController!
     private var settingsWindowController: SettingsWindowController?
     private var repository: WeatherRepository!
+    private var activeRepositoryKey: RepositoryKey?
+    private var repositories: [RepositoryKey: WeatherRepository] = [:]
+    private var snapshotCache: [RepositoryKey: WeatherSnapshot] = [:]
+    private var localPopoverMonitor: Any?
+    private var globalPopoverMonitor: Any?
     private var snapshot: WeatherSnapshot?
     private var lastError: Error?
     private var isLoading = false
@@ -34,7 +44,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         retryTask?.cancel()
     }
 
-    private func configureRepository() {
+    private func configureRepository(resetCaches: Bool = false) {
+        if resetCaches {
+            repositories.removeAll()
+            snapshotCache.removeAll()
+        }
+
+        let key = RepositoryKey(
+            providerMode: settings.providerMode,
+            locationID: settings.selectedLocationID
+        )
+        activeRepositoryKey = key
+
+        if let cachedRepository = repositories[key] {
+            repository = cachedRepository
+            snapshot = snapshotCache[key]
+            return
+        }
+
         let primary: WeatherProvider
         switch settings.providerMode {
         case .nwsWithOpenMeteo:
@@ -53,6 +80,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 currentProvider: LocationService()
             )
         )
+        repositories[key] = repository
+        snapshot = snapshotCache[key]
     }
 
     private func configureStatusItem() {
@@ -64,7 +93,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func configurePopover() {
-        popover.behavior = .transient
+        popover.behavior = .applicationDefined
+        popover.delegate = self
         popover.animates = true
         popover.contentSize = WeatherPopoverViewController.preferredSize
         popoverController = WeatherPopoverViewController(
@@ -88,10 +118,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             rebuildPopover()
             popover.contentSize = WeatherPopoverViewController.preferredSize
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            installPopoverEventMonitors()
         }
     }
 
     private func showSettings() {
+        closePopover()
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController(
                 settings: settings,
@@ -101,13 +133,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
         }
         settingsWindowController?.showWindow(nil)
+        settingsWindowController?.window?.makeKeyAndOrderFront(nil)
+        settingsWindowController?.window?.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
     }
 
     private func selectLocation(_ locationID: String) {
         guard settings.selectedLocationID != locationID else { return }
         settings.selectedLocationID = locationID
-        reloadSettingsAndRefresh()
+        refreshGeneration += 1
+        refreshTask?.cancel()
+        retryTask?.cancel()
+        isLoading = false
+        consecutiveFailures = 0
+        lastError = nil
+        configureRepository()
+        updateStatusButton()
+        rebuildPopover()
+        refresh(force: false)
     }
 
     private func reloadSettingsAndRefresh() {
@@ -117,8 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         isLoading = false
         consecutiveFailures = 0
         lastError = nil
-        snapshot = nil
-        configureRepository()
+        configureRepository(resetCaches: true)
         updateStatusButton()
         rebuildPopover()
         refresh(force: true)
@@ -158,16 +200,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func refresh(force: Bool) {
         guard !isLoading else { return }
+        guard let repository else { return }
         isLoading = true
         let generation = refreshGeneration
+        let repositoryKey = activeRepositoryKey
         rebuildPopover()
 
         refreshTask?.cancel()
-        refreshTask = Task { [weak self, generation] in
+        refreshTask = Task { [weak self, generation, repository, repositoryKey] in
             guard let self else { return }
             do {
                 let fresh = try await repository.refresh(force: force)
                 await MainActor.run {
+                    if let repositoryKey, self.repositories[repositoryKey] === repository {
+                        self.snapshotCache[repositoryKey] = fresh
+                    }
                     guard generation == self.refreshGeneration else { return }
                     self.snapshot = fresh
                     self.lastError = nil
@@ -188,6 +235,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+
+    private func closePopover() {
+        guard popover.isShown else { return }
+        popover.performClose(nil)
+    }
+
+    func popoverDidClose(_ notification: Notification) {
+        removePopoverEventMonitors()
+    }
+
+    private func installPopoverEventMonitors() {
+        removePopoverEventMonitors()
+
+        let eventMask: NSEvent.EventTypeMask = [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown]
+        localPopoverMonitor = NSEvent.addLocalMonitorForEvents(matching: eventMask) { [weak self] event in
+            guard let self else { return event }
+            if event.type == .keyDown, event.keyCode == 53 {
+                self.closePopover()
+                return nil
+            }
+            if self.shouldClosePopover(for: event) {
+                self.closePopover()
+            }
+            return event
+        }
+
+        globalPopoverMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] event in
+            guard let self, self.popover.isShown else { return }
+            let screenPoint = NSEvent.mouseLocation
+            if !self.pointIsInsidePopover(screenPoint) && !self.pointIsInsideStatusItem(screenPoint) {
+                self.closePopover()
+            }
+        }
+    }
+
+    private func removePopoverEventMonitors() {
+        if let localPopoverMonitor {
+            NSEvent.removeMonitor(localPopoverMonitor)
+            self.localPopoverMonitor = nil
+        }
+        if let globalPopoverMonitor {
+            NSEvent.removeMonitor(globalPopoverMonitor)
+            self.globalPopoverMonitor = nil
+        }
+    }
+
+    private func shouldClosePopover(for event: NSEvent) -> Bool {
+        guard popover.isShown else { return false }
+        guard event.type != .keyDown else { return false }
+
+        if let window = event.window {
+            if window === popover.contentViewController?.view.window {
+                return false
+            }
+            if window === statusItem.button?.window {
+                return false
+            }
+            let className = NSStringFromClass(type(of: window))
+            if className.localizedCaseInsensitiveContains("Menu") {
+                return false
+            }
+        }
+
+        let screenPoint: NSPoint
+        if let window = event.window {
+            screenPoint = window.convertPoint(toScreen: event.locationInWindow)
+        } else {
+            screenPoint = NSEvent.mouseLocation
+        }
+        return !pointIsInsidePopover(screenPoint) && !pointIsInsideStatusItem(screenPoint)
+    }
+
+    private func pointIsInsidePopover(_ point: NSPoint) -> Bool {
+        guard let windowFrame = popover.contentViewController?.view.window?.frame else {
+            return false
+        }
+        return windowFrame.contains(point)
+    }
+
+    private func pointIsInsideStatusItem(_ point: NSPoint) -> Bool {
+        guard let button = statusItem.button, let buttonWindow = button.window else {
+            return false
+        }
+        let frameInWindow = button.convert(button.bounds, to: nil)
+        let screenFrame = buttonWindow.convertToScreen(frameInWindow)
+        return screenFrame.contains(point)
     }
 
     private func updateStatusButton() {

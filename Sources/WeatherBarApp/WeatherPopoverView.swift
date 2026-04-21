@@ -2,6 +2,8 @@ import SwiftUI
 import WeatherBarCore
 
 struct WeatherPopoverView: View {
+    private static let addLocationSelectionID = "__add_location__"
+
     @ObservedObject var state: WeatherPopoverState
 
     let onRefresh: () -> Void
@@ -11,6 +13,7 @@ struct WeatherPopoverView: View {
     let onQuit: () -> Void
 
     @State private var selectedDayID: Date?
+    @State private var locationMenuSelection = AppSettings.currentLocationID
 
     private var selectedDay: DailyForecast? {
         guard let snapshot = state.snapshot else { return nil }
@@ -53,8 +56,23 @@ struct WeatherPopoverView: View {
             Color(nsColor: WeatherPalette.glassOverlay)
                 .allowsHitTesting(false)
         }
+        .onAppear {
+            locationMenuSelection = state.selectedLocationID
+        }
         .onChange(of: state.snapshot?.daily.first?.id) { _, newValue in
             selectedDayID = newValue
+        }
+        .onChange(of: state.selectedLocationID) { _, newValue in
+            locationMenuSelection = newValue
+        }
+        .onChange(of: locationMenuSelection) { _, newValue in
+            guard newValue != state.selectedLocationID else { return }
+            if newValue == Self.addLocationSelectionID {
+                locationMenuSelection = state.selectedLocationID
+                onAddLocation()
+            } else {
+                onSelectLocation(newValue)
+            }
         }
     }
 
@@ -132,24 +150,17 @@ struct WeatherPopoverView: View {
     }
 
     private var locationMenu: some View {
-        Menu {
-            Button("Current Location") {
-                onSelectLocation(AppSettings.currentLocationID)
+        Picker(selection: $locationMenuSelection) {
+            Text("Current Location").tag(AppSettings.currentLocationID)
+            ForEach(state.savedLocations) { location in
+                Text(location.name).tag(location.id)
             }
-            if !state.savedLocations.isEmpty {
-                Divider()
-                ForEach(state.savedLocations) { location in
-                    Button(location.name) {
-                        onSelectLocation(location.id)
-                    }
-                }
-            }
-            Divider()
-            Button("Add Location...", action: onAddLocation)
+            Text("Add Location...").tag(Self.addLocationSelectionID)
         } label: {
             Label(selectedLocationName, systemImage: "location")
                 .lineLimit(1)
         }
+        .pickerStyle(.menu)
         .frame(maxWidth: 210, alignment: .leading)
     }
 
