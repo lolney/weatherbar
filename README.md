@@ -2,6 +2,8 @@
 
 WeatherBar is a macOS menu-bar weather indicator written in Swift. It uses precise macOS Location Services fixes, National Weather Service forecast and station-observation data, and optional Open-Meteo details to show local conditions in the menu bar.
 
+<img width="761" height="646" alt="image" src="https://github.com/user-attachments/assets/26618aad-2c1b-4cd5-aeae-d46359cc66ae" />
+
 ## Features
 
 - National Weather Service API integration with nearest station observations for current conditions.
